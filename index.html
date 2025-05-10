@@ -3,8 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>画像背景切り抜きツール (ブラウザ版・自動トリミング対応)</title>
+    <title>画像背景切り抜きツール (デバッグ強化版)</title>
     <style>
+        /* CSSは前回と同様のため省略 */
         body { font-family: sans-serif; margin: 20px; background-color: #f4f4f4; }
         .container { max-width: 800px; margin: auto; background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
         h1 { text-align: center; color: #333; }
@@ -17,17 +18,21 @@
         .image-container { display: flex; justify-content: space-around; margin-top: 20px; flex-wrap: wrap; }
         .image-box { border: 1px solid #ccc; padding: 10px; margin:10px; width: calc(50% - 42px); min-width: 250px; box-sizing: border-box;}
         .image-box h2 { font-size: 1em; text-align: center; margin-bottom: 10px;}
-        img { max-width: 100%; max-height: 300px; display: block; margin: 0 auto; object-fit: contain; /* 追加 */ }
+        img { max-width: 100%; max-height: 300px; display: block; margin: 0 auto; object-fit: contain; }
         #loading { display: none; text-align: center; margin-top: 15px; font-weight: bold; }
         #downloadLink {
             display: none; margin: 15px auto; padding: 10px 20px; background-color: #28a745; color: white;
             text-decoration: none; border-radius: 5px; text-align: center; width: fit-content;
         }
+        .error-log {
+            margin-top: 15px; padding: 10px; background-color: #ffebee; color: #c62828;
+            border: 1px solid #ef9a9a; border-radius: 4px; display: none; white-space: pre-wrap;
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>画像背景切り抜きツール (ブラウザ版・自動トリミング対応)</h1>
+        <h1>画像背景切り抜きツール (デバッグ強化版)</h1>
         <p style="text-align:center;">背景を切り取りたい画像を選択してください。</p>
         <input type="file" id="imageUpload" accept="image/*">
 
@@ -47,8 +52,9 @@
             </div>
         </fieldset>
 
-        <button id="processImageBtn">背景を切り抜く＆自動トリミング</button> <!-- ▼変更点▼ ボタンテキスト変更 -->
+        <button id="processImageBtn">背景を切り抜く＆自動トリミング</button>
         <p id="loading">処理中...</p>
+        <div id="errorLog" class="error-log"></div> <!-- エラー表示用DIV -->
 
         <div class="image-container">
             <div class="image-box">
@@ -56,7 +62,7 @@
                 <img id="originalImagePreview" src="#" alt="元画像">
             </div>
             <div class="image-box">
-                <h2>最終結果 (背景切り抜き＆自動トリミング後)</h2> <!-- ▼変更点▼ 見出し変更 -->
+                <h2>最終結果 (背景切り抜き＆自動トリミング後)</h2>
                 <img id="resultImage" src="#" alt="切り抜き後の画像">
             </div>
         </div>
@@ -64,7 +70,9 @@
     </div>
 
     <script type="module">
-        import { removeBackground } from 'https://cdn.jsdelivr.net/npm/@picflow/background-removal@latest/dist/index.esm.js';
+        // ES Moduleとしてライブラリをインポート
+        // ライブラリのバージョンを固定することで、予期せぬアップデートによる問題を避けることも検討
+        import { removeBackground } from 'https://cdn.jsdelivr.net/npm/@picflow/background-removal@1.0.6/dist/index.esm.js'; // 例: バージョン指定
 
         const imageUpload = document.getElementById('imageUpload');
         const originalImagePreview = document.getElementById('originalImagePreview');
@@ -72,6 +80,7 @@
         const processImageBtn = document.getElementById('processImageBtn');
         const loadingText = document.getElementById('loading');
         const downloadLink = document.getElementById('downloadLink');
+        const errorLogDiv = document.getElementById('errorLog'); // エラー表示用DIVを取得
 
         const enableCropCheckbox = document.getElementById('enableCrop');
         const cropSettingsDiv = document.getElementById('cropSettings');
@@ -82,14 +91,31 @@
 
         let currentFile = null;
 
+        function logError(message, errorObject = null) {
+            console.error(message, errorObject);
+            errorLogDiv.textContent = `${message}\n${errorObject ? errorObject.stack || errorObject : ''}`;
+            errorLogDiv.style.display = 'block';
+        }
+
+        function clearErrorLog() {
+            errorLogDiv.textContent = '';
+            errorLogDiv.style.display = 'none';
+        }
+
+
         imageUpload.addEventListener('change', (event) => {
+            clearErrorLog();
             const file = event.target.files[0];
             if (file) {
                 currentFile = file;
+                console.log("画像が選択されました:", currentFile.name, "タイプ:", currentFile.type, "サイズ:", currentFile.size);
                 const reader = new FileReader();
                 reader.onload = (e) => {
                     originalImagePreview.src = e.target.result;
                     originalImagePreview.style.display = 'block';
+                }
+                reader.onerror = (e) => {
+                    logError("FileReaderで画像の読み込みに失敗しました。", e.target.error);
                 }
                 reader.readAsDataURL(file);
                 resultImage.src = "#";
@@ -102,27 +128,32 @@
             cropSettingsDiv.style.display = enableCropCheckbox.checked ? 'block' : 'none';
         });
 
-        // ▼変更点▼ 自動トリミング関数を追加
-        async function cropToContent(imageBlob) {
+        async function cropToContent(imageBlob, originalFileName = "cropped_image") {
+            console.log("cropToContent: 自動トリミング開始");
             return new Promise((resolve, reject) => {
                 const img = new Image();
                 img.onload = () => {
+                    console.log("cropToContent: Imageオブジェクト読み込み完了", img.width, "x", img.height);
                     const canvas = document.createElement('canvas');
                     canvas.width = img.width;
                     canvas.height = img.height;
                     const ctx = canvas.getContext('2d');
+                    if (!ctx) {
+                        reject(new Error("cropToContent: 2Dコンテキストの取得に失敗しました。"));
+                        return;
+                    }
                     ctx.drawImage(img, 0, 0);
 
                     try {
                         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
                         const data = imageData.data;
                         let minX = canvas.width, minY = canvas.height, maxX = -1, maxY = -1;
+                        const alphaThreshold = 5; // アルファ値の閾値を少し下げる (0-255)
 
-                        // 透明でないピクセルの境界を見つける
                         for (let y = 0; y < canvas.height; y++) {
                             for (let x = 0; x < canvas.width; x++) {
-                                const alpha = data[(y * canvas.width + x) * 4 + 3]; // Alpha channel
-                                if (alpha > 20) { // ある程度の不透明度を持つピクセルを対象 (閾値は調整可能)
+                                const alpha = data[(y * canvas.width + x) * 4 + 3];
+                                if (alpha > alphaThreshold) {
                                     if (x < minX) minX = x;
                                     if (x > maxX) maxX = x;
                                     if (y < minY) minY = y;
@@ -130,44 +161,62 @@
                                 }
                             }
                         }
+                        console.log(`cropToContent: バウンディングボックス計算結果 minX:${minX}, minY:${minY}, maxX:${maxX}, maxY:${maxY}`);
 
                         if (maxX < minX || maxY < minY) { // 画像が完全に透明、または検出できなかった場合
-                            resolve(imageBlob); // 元のBlobを返す
+                            console.warn("cropToContent: 有効なコンテンツが見つかりませんでした。トリミングせずに元の画像を返します。");
+                            resolve(imageBlob); // 元のBlobをそのまま返す
                             return;
                         }
 
                         const cropWidth = maxX - minX + 1;
                         const cropHeight = maxY - minY + 1;
+                        console.log(`cropToContent: トリミング後のサイズ: ${cropWidth} x ${cropHeight}`);
+
 
                         const cropCanvas = document.createElement('canvas');
                         cropCanvas.width = cropWidth;
                         cropCanvas.height = cropHeight;
                         const cropCtx = cropCanvas.getContext('2d');
+                         if (!cropCtx) {
+                            reject(new Error("cropToContent: トリミング用2Dコンテキストの取得に失敗しました。"));
+                            return;
+                        }
                         cropCtx.drawImage(canvas, minX, minY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
 
                         cropCanvas.toBlob(blob => {
                             if (blob) {
+                                console.log("cropToContent: 自動トリミング完了、Blob生成成功");
                                 resolve(blob);
                             } else {
-                                reject(new Error('Canvas toBlob failed during auto-crop'));
+                                // toBlobがnullを返すのは通常、Canvasが大きすぎるなどの稀なケース
+                                reject(new Error('cropToContent: CanvasからBlobへの変換に失敗しました (nullが返されました)。'));
                             }
-                        }, 'image/png');
+                        }, 'image/png'); // PNGで出力
                     } catch (e) {
-                        console.error("Error during pixel manipulation for auto-crop:", e);
-                        reject(new Error('Error during auto-crop pixel processing.'));
+                        reject(new Error(`cropToContent: ピクセル処理中にエラーが発生しました: ${e.message}`));
                     }
                 };
-                img.onerror = () => reject(new Error('Image loading for auto-crop failed'));
+                img.onerror = (e) => {
+                    // URL.createObjectURLでエラーは起きにくいが念のため
+                    reject(new Error(`cropToContent: BlobからのImageオブジェクト読み込みに失敗しました。Blob Type: ${imageBlob.type}, Size: ${imageBlob.size}`));
+                };
+                
+                if (!imageBlob || typeof imageBlob.type !== 'string' || typeof imageBlob.size !== 'number') {
+                     reject(new Error(`cropToContent: 無効なBlobが渡されました。 Blob: ${JSON.stringify(imageBlob)}`));
+                     return;
+                }
                 img.src = URL.createObjectURL(imageBlob);
             });
         }
-        // ▲変更点▲ 自動トリミング関数
 
         processImageBtn.addEventListener('click', async () => {
+            clearErrorLog();
             if (!currentFile) {
                 alert('まず画像を選択してください。');
                 return;
             }
+            console.log("処理開始ボタンクリック");
 
             loadingText.style.display = 'block';
             processImageBtn.disabled = true;
@@ -176,64 +225,85 @@
 
             try {
                 let imageToProcess = currentFile;
+                console.log("初期処理対象:", imageToProcess.name);
 
                 if (enableCropCheckbox.checked) {
+                    console.log("初期切り抜きオプション有効");
                     const x = parseInt(cropXInput.value);
                     const y = parseInt(cropYInput.value);
                     const width = parseInt(cropWidthInput.value);
                     const height = parseInt(cropHeightInput.value);
+                    console.log(`初期切り抜き座標: x=${x}, y=${y}, width=${width}, height=${height}`);
+
 
                     if (isNaN(x) || isNaN(y) || isNaN(width) || isNaN(height) || width <= 0 || height <= 0) {
                         alert('切り抜く範囲の座標とサイズを正しく入力してください。');
-                        throw new Error('Invalid crop dimensions');
+                        throw new Error('無効な切り抜き範囲の指定です。');
                     }
 
-                    const croppedBlob = await new Promise((resolve, reject) => {
+                    imageToProcess = await new Promise((resolve, reject) => {
                         const img = new Image();
                         img.onload = () => {
+                            console.log("初期切り抜き: Imageオブジェクト読み込み完了");
                             const canvas = document.createElement('canvas');
                             canvas.width = width;
                             canvas.height = height;
                             const ctx = canvas.getContext('2d');
+                            if (!ctx) {
+                                reject(new Error("初期切り抜き: 2Dコンテキストの取得に失敗しました。"));
+                                return;
+                            }
                             ctx.drawImage(img, x, y, width, height, 0, 0, width, height);
                             canvas.toBlob(blob => {
                                 if (blob) {
+                                    console.log("初期切り抜き: Blob生成成功");
                                     resolve(blob);
                                 } else {
-                                    reject(new Error('Canvas toBlob failed'));
+                                    reject(new Error('初期切り抜き: CanvasからBlobへの変換に失敗しました (nullが返されました)。'));
                                 }
                             }, currentFile.type || 'image/png');
                         };
-                        img.onerror = () => reject(new Error('Image loading for crop failed'));
+                        img.onerror = (e) => {
+                            reject(new Error(`初期切り抜き: 元画像(${currentFile.name})からのImageオブジェクト読み込みに失敗しました。`));
+                        };
                         img.src = URL.createObjectURL(currentFile);
                     });
-                    imageToProcess = croppedBlob;
-                    originalImagePreview.src = URL.createObjectURL(imageToProcess); // 初期切り抜き後をプレビュー
+                    originalImagePreview.src = URL.createObjectURL(imageToProcess);
+                    console.log("初期切り抜き後画像サイズ:", imageToProcess.size, "タイプ:", imageToProcess.type);
                 } else {
-                    // 初期切り抜きしない場合は、アップロードされた画像をそのままプレビュー
-                    originalImagePreview.src = URL.createObjectURL(currentFile);
+                    originalImagePreview.src = URL.createObjectURL(currentFile); // 元画像をプレビュー
                 }
 
-                // 1. 背景除去
+                console.log("背景除去処理開始 (removeBackground)");
                 const bgRemovedBlob = await removeBackground(imageToProcess);
+                if (!bgRemovedBlob || typeof bgRemovedBlob.size !== 'number' || bgRemovedBlob.size === 0) {
+                    throw new Error('背景除去ライブラリから無効な結果が返されました (Blobが空または不正)。');
+                }
+                console.log("背景除去処理完了、Blobサイズ:", bgRemovedBlob.size, "タイプ:", bgRemovedBlob.type);
 
-                // 2. 背景除去後の画像を自動トリミング ▼変更点▼
-                const finalTrimmedBlob = await cropToContent(bgRemovedBlob);
-                // ▲変更点▲
 
-                const resultUrl = URL.createObjectURL(finalTrimmedBlob); // ▼変更点▼ finalTrimmedBlobを使用
+                console.log("自動トリミング処理開始 (cropToContent)");
+                const finalTrimmedBlob = await cropToContent(bgRemovedBlob, currentFile.name + "_trimmed");
+                if (!finalTrimmedBlob || typeof finalTrimmedBlob.size !== 'number' || finalTrimmedBlob.size === 0) {
+                    throw new Error('自動トリミング処理から無効な結果が返されました (Blobが空または不正)。');
+                }
+                console.log("自動トリミング処理完了、Blobサイズ:", finalTrimmedBlob.size, "タイプ:", finalTrimmedBlob.type);
+
+
+                const resultUrl = URL.createObjectURL(finalTrimmedBlob);
                 resultImage.src = resultUrl;
                 resultImage.style.display = 'block';
 
                 downloadLink.href = resultUrl;
                 downloadLink.style.display = 'block';
+                console.log("全処理完了、結果表示");
 
             } catch (error) {
-                console.error('処理エラー:', error);
-                alert('画像の処理に失敗しました。コンソールで詳細を確認してください。\nエラー: ' + error.message);
+                logError('画像の処理中にエラーが発生しました:', error);
             } finally {
                 loadingText.style.display = 'none';
                 processImageBtn.disabled = false;
+                console.log("処理ボタンの状態をリセット");
             }
         });
     </script>
